@@ -28,6 +28,7 @@
         # -- Public/Network/ -------------------------------------------------
         'Invoke-NetworkHardening'
         'Set-FirewallConfiguration'
+        'Mitigate-ZeroLogon'
         'Add-FirewallPort'
         'Get-FirewallPortOptions'
         'Remove-RemoteManagement'

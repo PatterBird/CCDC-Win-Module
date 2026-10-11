@@ -9,12 +9,13 @@
           1. Set-FirewallConfiguration  - enables all profiles, blocks inbound, allows only
                                          specified ports; optionally preserves TCP 5985/5986
                                          for WinRM management.
-          2. Remove-RemoteManagement    - stops and disables WinRM, Remote Registry, RDP,
+          2. Mitigate-ZeroLogon          - limits inbound TCP RPC allow rules to LocalSubnet.
+          3. Remove-RemoteManagement    - stops and disables WinRM, Remote Registry, RDP,
                                          SSH (if present), and Telnet.
 
-        The two steps are deliberately ordered: firewall perimeter closes first, then
-        the services are torn down so there is no window where a service is killed but
-        the port is still open.
+        The steps are deliberately ordered: configure the firewall, restrict RPC, then
+        tear down remote-management services so there is no window where a service is
+        stopped but its port remains open.
 
         When -PreserveManagementPort is set (typically when applying hardening over
         WinRM), Remove-RemoteManagement is called with -SkipWinRM
@@ -40,8 +41,8 @@
         Set-FirewallConfiguration.
 
     .PARAMETER SkipRemoteManagement
-        Skip the Remove-RemoteManagement step entirely.  Use when you want to
-        apply the firewall but leave remote channels open for continued access.
+        Skip the Remove-RemoteManagement step entirely. Use when you want to apply
+        firewall and RPC hardening but leave remote channels open.
 
     .PARAMETER SkipRDP
         When Remove-RemoteManagement runs, pass -SkipRDP so RDP is not disabled.
@@ -49,7 +50,7 @@
 
     .EXAMPLE
         Invoke-NetworkHardening
-        # Full sequence: firewall, then shut down all remote management channels.
+        # Full sequence: firewall, RPC mitigation, then remote-management teardown.
 
     .EXAMPLE
         Invoke-NetworkHardening -PreserveManagementPort
@@ -58,7 +59,7 @@
 
     .EXAMPLE
         Invoke-NetworkHardening -SkipRemoteManagement
-        # Firewall only; remote channels left running.
+        # Firewall and RPC mitigation; remote channels left running.
     #>
     [CmdletBinding()]
     param(
@@ -81,12 +82,16 @@
     Write-Banner "Network & Remote-Access Hardening"
 
     # Step 1: Firewall
-    $script:NextStepLabel = 'Network 1/2'
+    $script:NextStepLabel = 'Network 1/3'
     Set-FirewallConfiguration -NonInteractive:$NonInteractive -Prompt:$Prompt -FirewallPorts $FirewallPorts -AdditionalPorts $AdditionalPorts -PreserveManagementPort:$PreserveManagementPort
 
-    # Step 2: Remote management teardown
+    # Step 2: Restrict RPC after firewall configuration has enabled its AD rules.
+    $script:NextStepLabel = 'Network 2/3'
+    Mitigate-ZeroLogon
+
+    # Step 3: Remote management teardown
     if (-not $SkipRemoteManagement) {
-        $script:NextStepLabel = 'Network 2/2'
+        $script:NextStepLabel = 'Network 3/3'
         if ($PreserveManagementPort) {
             # Running over WinRM - keep WinRM alive, still disable RDP unless caller opts out
             if ($SkipRDP) {
@@ -103,7 +108,7 @@
         }
     } else {
         Write-Host ""
-        Write-Status -Level Skip -Tag 'Network 2/2' "SKIPPED - remote management teardown (-SkipRemoteManagement)" -LogMessage "Invoke-NetworkHardening: Remove-RemoteManagement skipped"
+        Write-Status -Level Skip -Tag 'Network 3/3' "SKIPPED - remote management teardown (-SkipRemoteManagement)" -LogMessage "Invoke-NetworkHardening: Remove-RemoteManagement skipped"
     }
 
     Write-Host ""
