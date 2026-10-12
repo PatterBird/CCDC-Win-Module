@@ -64,12 +64,20 @@ function Mitigate-ZeroLogon {
                 EdgeTraversalPolicy = $rule.EdgeTraversalPolicy
                 LooseSourceMapping = $rule.LooseSourceMapping
                 LocalOnlyMapping = $rule.LocalOnlyMapping
-                LocalUser = @($securityFilter.LocalUser)
-                RemoteUser = @($securityFilter.RemoteUser)
-                RemoteMachine = @($securityFilter.RemoteMachine)
                 Authentication = $securityFilter.Authentication
                 Encryption = $securityFilter.Encryption
                 OverrideBlockRules = $securityFilter.OverrideBlockRules
+            }
+            # The user/machine security filters are scalar SDDL strings. Wrapping
+            # them in @() creates Object[], which Windows PowerShell 5.1 cannot bind.
+            if ($securityFilter.LocalUser) {
+                $commonRuleParameters['LocalUser'] = [string]$securityFilter.LocalUser
+            }
+            if ($securityFilter.RemoteUser) {
+                $commonRuleParameters['RemoteUser'] = [string]$securityFilter.RemoteUser
+            }
+            if ($securityFilter.RemoteMachine) {
+                $commonRuleParameters['RemoteMachine'] = [string]$securityFilter.RemoteMachine
             }
 
             # Preserve the non-RPC ports in their own rule before removing the

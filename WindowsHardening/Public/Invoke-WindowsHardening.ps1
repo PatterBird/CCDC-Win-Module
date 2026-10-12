@@ -1,34 +1,41 @@
 ﻿function Invoke-WindowsHardening {
     <#
     .SYNOPSIS
-        Runs the full hardening sequence: every section orchestrator, in order.
+        Runs the complete hardening sequence in the competition-approved order.
     .DESCRIPTION
         Starts a fresh log, shows the OS and AD status detected at module import,
         checks for administrator rights, then runs:
 
-          1. Invoke-UserHardening          - admin removal, Zulu password rotation, RDP group
-                                             reset, WDigest credential hardening
-          2. Invoke-NetworkHardening       - firewall, remote-management teardown
-          3. Invoke-ServiceHardening       - SMB + unused network protocols
-          4. Install-Splunk                - unless -SkipSplunk
-          5. Set-RestrictedExecutionPolicy - machine-wide Restricted
+          1. Set-AdministratorPassword    - unless -SkipPasswordChange
+          2. Remove-AdminUsers
+          3. Set-ZuluPassword             - existing accounts, unless -SkipPasswordChange
+          4. Set-FirewallConfiguration
+          5. Mitigate-ZeroLogon
+          6. Mitigate-EternalBlue
+          7. Ask whether RDP is needed, then apply RDP group/service changes
+          8. Protect-Mimikatz
+          9. Remove-RemoteManagement
+         10. Disable-UnusedNetworkProtocols
+         11. Install-Splunk                - unless -SkipSplunk
+         12. Create-CCDCUsers               - unless -SkipPasswordChange
+         13. Set-RestrictedExecutionPolicy - machine-wide Restricted
 
         Each step is wrapped in Invoke-HardeningOperation, so one failure is counted and
         reported without stopping the rest. Ends with the operation summary.
 
-        Prompts for what is not passed: the Zulu salt phrase (-SaltPhrase) and the Splunk
-        server IP (-SplunkIP or -SkipSplunk). Before hardening starts it asks whether to
-        disable RDP (unless -DisableRDP or -SkipRDP says), and at the firewall step it asks
-        for extra ports to allow; -NoPrompt skips both questions. To pick individual steps instead, use
+        Prompts for passwords and values not passed: the Administrator password, Zulu salt
+        phrase, Splunk server IP, and extra firewall ports. The firewall is configured before
+        SMB hardening, and both precede the RDP choice; a skilled operator should account for
+        possible session loss. To pick individual steps or sections instead, use
         Invoke-HardeningMenu.
     .PARAMETER SkipPasswordChange
-        Skip Zulu account creation and password rotation. Alias: -sp.
+        Skip the Administrator password change, Zulu rotation, and CCDC account creation. Alias: -sp.
     .PARAMETER SkipRDP
         Leave RDP enabled and skip the RDP group reset, without asking. Alias: -srdp.
     .PARAMETER DisableRDP
         Disable RDP and reset the RDP group, without asking. Alias: -drdp. With neither
-        this nor -SkipRDP, the run asks up front; with -NoPrompt (or in a session that
-        cannot prompt) it disables RDP.
+        this nor -SkipRDP, the run asks whether RDP is needed after SMB hardening; with
+        -NoPrompt (or in a session that cannot prompt) it disables RDP unless -SkipRDP is set.
     .PARAMETER FirewallPorts
         Ports to allow ("80, 443", @("80","443"), or 80,443). If omitted, a domain
         controller gets the common AD ports and any other machine gets Deny All only. Alias: -f.
@@ -36,10 +43,8 @@
         Extra ports to allow on top of -FirewallPorts or the defaults above - e.g. a database
         or web port the box needs. Same formats as -FirewallPorts. Alias: -ap.
     .PARAMETER NoPrompt
-        Don't ask whether to disable RDP (it is disabled unless -SkipRDP) or for extra
-        firewall ports (only the defaults, -FirewallPorts, and -AdditionalPorts are used). Without it, the firewall step keeps those ports and then asks
-        for extra ones. In a session that cannot prompt (e.g. over WinRM), the question is
-        skipped with a warning.
+        Don't ask whether RDP is needed (RDP is disabled unless -SkipRDP) or for extra
+        firewall ports (only the defaults, -FirewallPorts, and -AdditionalPorts are used).
     .PARAMETER SaltPhrase
         Salt phrase for Zulu password generation. If omitted, Zulu prompts for it. Alias: -s.
     .PARAMETER LogPath
@@ -156,9 +161,48 @@
         throw "Pre-flight checks failed: $($_.Exception.Message)"
     }
 
-    # -- RDP: ask once, up front ---------------------------------------------
-    # The answer is needed before step 1 (RDP group reset) and step 2 (RDP disable).
-    # "No" means the same as -SkipRDP: RDP stays enabled and its group is not reset.
+    # -- Hardening sequence ---------------------------------------------------
+    if ($SkipPasswordChange) {
+        Write-Status "Administrator password change, password rotation, and CCDC account creation will be skipped (-sp)"
+    }
+    if ($SkipRDP) {
+        Write-Status "RDP group reset and RDP disable will be skipped (RDP stays enabled)"
+    }
+
+    Write-Banner "Step 1/13: Change Administrator password" -Style Inline -Log
+    if ($SkipPasswordChange) {
+        Write-Status -Level Skip "Administrator password change skipped (-SkipPasswordChange)"
+    } else {
+        $script:NextStepLabel = 'Full Run 1/13'
+        Set-AdministratorPassword -SaltPhrase $SaltPhrase
+    }
+
+    Write-Banner "Step 2/13: Remove unauthorized administrators" -Style Inline -Log
+    $script:NextStepLabel = 'Full Run 2/13'
+    Remove-AdminUsers
+
+    Write-Banner "Step 3/13: Rotate existing user passwords" -Style Inline -Log
+    if ($SkipPasswordChange) {
+        Write-Status -Level Skip "Existing-user password rotation skipped (-SkipPasswordChange)"
+    } else {
+        $script:NextStepLabel = 'Full Run 3/13'
+        Set-ZuluPassword -SaltPhrase $SaltPhrase
+    }
+
+    Write-Banner "Step 4/13: Configure firewall" -Style Inline -Log
+    $script:NextStepLabel = 'Full Run 4/13'
+    Set-FirewallConfiguration -NonInteractive -Prompt:(-not $NoPrompt) -FirewallPorts $ports -AdditionalPorts $extraPorts -PreserveManagementPort:$PreserveManagementPort
+
+    Write-Banner "Step 5/13: Mitigate ZeroLogon" -Style Inline -Log
+    $script:NextStepLabel = 'Full Run 5/13'
+    Mitigate-ZeroLogon
+
+    Write-Banner "Step 6/13: Mitigate EternalBlue (SMBv1)" -Style Inline -Log
+    $script:NextStepLabel = 'Full Run 6/13'
+    Mitigate-EternalBlue
+
+    # This decision follows firewall and SMB changes. A skilled operator should
+    # account for any resulting loss of the current remote session.
     if (-not $SkipRDP -and -not $DisableRDP) {
         if ($NoPrompt) {
             Write-Status "RDP will be disabled (-NoPrompt; pass -SkipRDP to keep it)"
@@ -166,9 +210,9 @@
             Write-Host ""
             Write-Status -Level Warning "Disabling RDP ends any RDP session to this machine, including yours." -NoLog
             try {
-                $rdpChoice = Read-Choice -Prompt "Disable RDP on this machine?" -Default 'Y' -Options @(
-                    @{ Key = 'Y'; Label = 'Yes - disable RDP and reset the Remote Desktop Users group'; Value = 'disable' }
-                    @{ Key = 'N'; Label = 'No  - keep RDP enabled and leave the group as is (same as -SkipRDP)'; Value = 'keep' }
+                $rdpChoice = Read-Choice -Prompt "Is RDP needed on this machine?" -Default 'Y' -Options @(
+                    @{ Key = 'Y'; Label = 'Yes - keep RDP enabled and leave the group as is (same as -SkipRDP)'; Value = 'keep' }
+                    @{ Key = 'N'; Label = 'No  - disable RDP and reset the Remote Desktop Users group'; Value = 'disable' }
                 )
                 $SkipRDP = $rdpChoice -eq 'keep'
             } catch {
@@ -179,34 +223,50 @@
         }
     }
 
-    # -- Hardening sequence ---------------------------------------------------
-    if ($SkipPasswordChange) {
-        Write-Status "Password rotation will be skipped (-sp)"
-    }
+    Write-Banner "Step 7/13: Apply RDP user choice" -Style Inline -Log
     if ($SkipRDP) {
-        Write-Status "RDP group reset and RDP disable will be skipped (RDP stays enabled)"
+        Write-Status -Level Skip "RDP group reset skipped (-SkipRDP); RDP stays enabled"
+    } else {
+        $script:NextStepLabel = 'Full Run 7/13'
+        Remove-RDPUsers
     }
 
-    Write-Banner "Step 1/5: Hardening users and credentials" -Style Inline -Log
-    Invoke-UserHardening -SkipPasswordChange:$SkipPasswordChange -SkipRDP:$SkipRDP -SaltPhrase $SaltPhrase
+    Write-Banner "Step 8/13: Protect credentials from Mimikatz" -Style Inline -Log
+    $script:NextStepLabel = 'Full Run 8/13'
+    Protect-Mimikatz
 
-    Write-Banner "Step 2/5: Hardening network and remote access" -Style Inline -Log
-    Invoke-NetworkHardening -NonInteractive -Prompt:(-not $NoPrompt) -FirewallPorts $ports -AdditionalPorts $extraPorts -PreserveManagementPort:$PreserveManagementPort -SkipRDP:$SkipRDP
+    Write-Banner "Step 9/13: Remove remote management services" -Style Inline -Log
+    $script:NextStepLabel = 'Full Run 9/13'
+    $remoteManagementArgs = @{}
+    if ($PreserveManagementPort) { $remoteManagementArgs.SkipWinRM = $true }
+    if ($SkipRDP) { $remoteManagementArgs.SkipRDP = $true }
+    Remove-RemoteManagement @remoteManagementArgs
 
-    Write-Banner "Step 3/5: Hardening services (SMB + unused network protocols)" -Style Inline -Log
-    Invoke-ServiceHardening
+    Write-Banner "Step 10/13: Disable unused network protocols" -Style Inline -Log
+    $script:NextStepLabel = 'Full Run 10/13'
+    Disable-UnusedNetworkProtocols
 
-    Write-Banner "Step 4/5: Configuring Splunk" -Style Inline -Log
+    Write-Banner "Step 11/13: Configuring Splunk" -Style Inline -Log
     if ($SkipSplunk) {
         Write-Status -Level Skip "Splunk configuration skipped (-SkipSplunk)" -LogMessage "Splunk configuration skipped per -SkipSplunk"
     } else {
+        $script:NextStepLabel = 'Full Run 11/13'
         if ([string]::IsNullOrEmpty($SplunkIP)) {
             $SplunkIP = Read-HostAddress -Prompt "Splunk server IP"
         }
         Install-Splunk -IP $SplunkIP
     }
 
-    Write-Banner "Step 5/5: Setting Execution Policy to Restricted" -Style Inline -Log
+    Write-Banner "Step 12/13: Creating CCDC competition accounts" -Style Inline -Log
+    if (-not $SkipPasswordChange) {
+        $script:NextStepLabel = 'Full Run 12/13'
+        Create-CCDCUsers -SaltPhrase $SaltPhrase
+    } else {
+        Write-Status -Level Skip "CCDC account creation skipped (-SkipPasswordChange)"
+    }
+
+    Write-Banner "Step 13/13: Setting Execution Policy to Restricted" -Style Inline -Log
+    $script:NextStepLabel = 'Full Run 13/13'
     Set-RestrictedExecutionPolicy
 
     Write-Host ""

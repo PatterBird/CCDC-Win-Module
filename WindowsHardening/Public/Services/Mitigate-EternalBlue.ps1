@@ -1,10 +1,10 @@
-function Update-SMB {
+function Mitigate-EternalBlue {
     [CmdletBinding()]
     param()
 
-    $smbUpgradeCompatible = @("Client8", "Client10", "Client11", "Server2012", "Server2012R2", "Server2016", "Server2019", "Server2022", "Server2025")
+    $eternalBlueMitigationCompatible = @("Client8", "Client10", "Client11", "Server2012", "Server2012R2", "Server2016", "Server2019", "Server2022", "Server2025")
 
-    Invoke-HardeningOperation -OperationName "Upgrade SMB" -OSCompatibility $smbUpgradeCompatible -ProgressMessage "Enabling SMBv2/v3, disabling SMBv1, and requiring SMB signing" -ScriptBlock {
+    Invoke-HardeningOperation -OperationName "Mitigate EternalBlue" -OSCompatibility $eternalBlueMitigationCompatible -ProgressMessage "Disabling SMBv1, enabling SMBv2/v3, and requiring SMB signing" -ScriptBlock {
         if (-not [bool](Get-Module -ListAvailable -Name SmbShare)) {
             Write-Status -Level Warning "SMB module not available. Attempting to import..."
             try {

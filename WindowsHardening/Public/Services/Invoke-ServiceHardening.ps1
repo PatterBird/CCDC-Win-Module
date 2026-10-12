@@ -6,7 +6,7 @@
     .DESCRIPTION
         Runs the full service hardening sequence in the recommended order:
 
-          1. Update-SMB                  - disables SMBv1 (EternalBlue), enables SMBv2/3,
+          1. Mitigate-EternalBlue        - disables SMBv1, enables SMBv2/3,
                                           and requires SMB signing (blocks SMB relay).
           2. Disable-UnusedNetworkProtocols - disables IPv6 on all active adapters and
                                           disables NetBIOS over TCP/IP.
@@ -14,8 +14,8 @@
         SMB hardening runs first so the network stack is secured before network
         adapter settings are changed.
 
-    .PARAMETER SkipSMB
-        Skip the Update-SMB step.
+    .PARAMETER SkipEternalBlueMitigation
+        Skip the Mitigate-EternalBlue step.
 
     .PARAMETER SkipNetworkProtocols
         Skip the Disable-UnusedNetworkProtocols step. Alias: -SkipNetworkServices.
@@ -25,12 +25,12 @@
         # Full sequence: SMB hardening then unused network protocols.
 
     .EXAMPLE
-        Invoke-ServiceHardening -SkipSMB
+        Invoke-ServiceHardening -SkipEternalBlueMitigation
         # Only disables unused network protocols; SMB left unchanged.
     #>
     [CmdletBinding()]
     param(
-        [switch]$SkipSMB,
+        [switch]$SkipEternalBlueMitigation,
 
         [Alias('SkipNetworkServices')]
         [switch]$SkipNetworkProtocols
@@ -39,12 +39,12 @@
     Write-Banner "Service Hardening"
 
     # Step 1: SMB hardening
-    if (-not $SkipSMB) {
+    if (-not $SkipEternalBlueMitigation) {
         $script:NextStepLabel = 'Services 1/2'
-        Update-SMB
+        Mitigate-EternalBlue
     } else {
         Write-Host ""
-        Write-Status -Level Skip -Tag 'Services 1/2' "SKIPPED - SMB hardening (-SkipSMB)" -LogMessage "Invoke-ServiceHardening: SMB hardening skipped"
+        Write-Status -Level Skip -Tag 'Services 1/2' "SKIPPED - EternalBlue mitigation (-SkipEternalBlueMitigation)" -LogMessage "Invoke-ServiceHardening: EternalBlue mitigation skipped"
     }
 
     # Step 2: Disable unused network protocols (IPv6, NetBIOS)

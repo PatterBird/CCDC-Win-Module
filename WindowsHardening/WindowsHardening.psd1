@@ -18,7 +18,8 @@
         'Set-ZuluPassword'
         'Write-ZuluLog'
         'Set-UserPassword'
-        'Initialize-CompetitionUsers'
+        'Set-AdministratorPassword'
+        'Create-CCDCUsers'
         'New-ADUserAccount'
         'Remove-AdminUsers'
         'Remove-RDPUsers'
@@ -36,7 +37,7 @@
         # -- Public/Services/ ------------------------------------------------
         'Invoke-ServiceHardening'
         'Disable-UnusedNetworkProtocols'
-        'Update-SMB'
+        'Mitigate-EternalBlue'
         'Set-RestrictedExecutionPolicy'
 
         # -- Public/SIEM/ -----------------------------------------------------

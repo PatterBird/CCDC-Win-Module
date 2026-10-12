@@ -149,7 +149,7 @@ All shared state is module-scoped (`$script:`). Nothing uses globals except the
 | `$script:log` | `Set-OperationStatus` | Map of operation name to status text, shown by `Show-OperationSummary` |
 | `$script:OperationResults` | `Invoke-HardeningOperation` | `Total` / `Successful` / `Failed` / `Skipped` counters and `Warnings` |
 | `$script:TrackedOperations` | `Log.ps1` | Operation names pre-filled as "Not executed" in the summary |
-| `$script:NextStepLabel` | Orchestrators | One-shot step label like `Users 2/4` (see [Orchestrators](#orchestrators)) |
+| `$script:NextStepLabel` | Orchestrators | One-shot step label like `Users 2/6` (see [Orchestrators](#orchestrators)) |
 
 The OS object's properties are `Caption`, `Version`, `BuildNumber`, `OSVersion` (for
 example `Windows Server 2022`), `OSFamily` (for example `Server2022` or `Client10`,
@@ -235,7 +235,7 @@ What it does, in order:
 4. If `-OSCompatibility` is given and `OS.OSFamily` isn't in the list, it logs a skip,
    increments `Skipped`, records "Skipped - OS incompatible" and returns without running
    the script block.
-5. Prints the header (`[Users 1/4] Remove Admin Users` or `[EXECUTING] ...`) and runs the
+5. Prints the header (`[Users 1/6] Change Administrator Password` or `[EXECUTING] ...`) and runs the
    script block.
 6. If the block finishes, it prints `<name> completed successfully`, increments
    `Successful`, and sets the status to "Executed successfully".
@@ -279,18 +279,18 @@ There are two levels:
 
 ```
 Invoke-WindowsHardening                 full run; new log; pre-flight checks; final summary
-├── Invoke-UserHardening                Users 1/4 .. 4/4
-│   ├── Remove-AdminUsers
-│   ├── Set-ZuluPassword -Initial       ("Zulu Passwords" operation)
-│   ├── Remove-RDPUsers
-│   └── Protect-Mimikatz
-├── Invoke-ServiceHardening             Services 1/2 .. 2/2
-│   ├── Update-SMB
-│   └── Disable-UnusedNetworkProtocols
-├── Invoke-NetworkHardening             Network 1/2 .. 2/2
-│   ├── Set-FirewallConfiguration
-│   └── Remove-RemoteManagement
+├── Set-AdministratorPassword           unless -SkipPasswordChange
+├── Remove-AdminUsers
+├── Set-ZuluPassword                    existing eligible users; unless -SkipPasswordChange
+├── Set-FirewallConfiguration           step 4, before the RDP choice
+├── Mitigate-ZeroLogon
+├── Mitigate-EternalBlue
+├── RDP choice → Remove-RDPUsers / preserve group
+├── Protect-Mimikatz
+├── Remove-RemoteManagement              honors RDP and WinRM choices
+├── Disable-UnusedNetworkProtocols
 ├── Install-Splunk                      unless -SkipSplunk
+├── Create-CCDCUsers                    unless -SkipPasswordChange
 └── Set-RestrictedExecutionPolicy       always last (see below)
 ```
 
@@ -301,13 +301,13 @@ They all follow one pattern:
 ```powershell
 Write-Banner "Service Hardening"                      # Box banner: screen + log section marker
 
-if (-not $SkipSMB) {
+if (-not $SkipEternalBlueMitigation) {
     $script:NextStepLabel = 'Services 1/2'            # consumed by the next Invoke-HardeningOperation
-    Update-SMB
+    Mitigate-EternalBlue
 } else {
     Write-Host ""
-    Write-Status -Level Skip -Tag 'Services 1/2' "SKIPPED - SMB hardening (-SkipSMB)" `
-        -LogMessage "Invoke-ServiceHardening: SMB hardening skipped"
+    Write-Status -Level Skip -Tag 'Services 1/2' "SKIPPED - EternalBlue mitigation (-SkipEternalBlueMitigation)" `
+        -LogMessage "Invoke-ServiceHardening: EternalBlue mitigation skipped"
 }
 # ... next step ...
 
@@ -321,9 +321,11 @@ Write-Status -Tag Services "Done." -LogMessage "Invoke-ServiceHardening complete
   can return *before* reaching `Invoke-HardeningOperation` (for example by validating
   parameters first and throwing), the label stays set and ends up on whatever operation
   runs next.
-- **Order matters, and each file's help text says why.** Admin removal comes before
-  password rotation, and rotation comes early so stolen credentials stop working as soon
-  as possible. The firewall closes before remote-management services are torn down.
+- **Order matters, and each file's help text says why.** The full orchestrator calls
+  leaf functions directly so it can interleave user, network, and service work. It changes
+  the Administrator password first, rotates existing-user passwords, then configures the
+  firewall and SMB hardening before the RDP choice. The section orchestrators remain public entry points for
+  running an entire category independently.
 
 ### `Invoke-WindowsHardening`
 
@@ -333,22 +335,23 @@ Write-Status -Tag Services "Done." -LogMessage "Invoke-ServiceHardening complete
    the counters.
 3. Shows the OS and AD status, then runs `Test-Prerequisites`, which throws if the
    session isn't elevated.
-4. Runs the three section orchestrators, then Splunk, then the execution policy.
-   `Invoke-NetworkHardening` always gets `-NonInteractive`, plus `-Prompt` unless
-   `-NoPrompt` was given.
+4. Runs the ordered leaf-function sequence shown above. Firewall configuration is step 4;
+   SMB hardening is step 6, and the RDP question follows it. The prompt asks whether RDP is
+   needed; Yes keeps it enabled and No disables it. `-NoPrompt` makes firewall
+   configuration use supplied/default ports and disables RDP unless `-SkipRDP` is given;
+   required password and Splunk prompts still occur unless their values or skip switches are supplied.
 5. Shows the summary with `Show-OperationSummary`, appends this run's new
    `$global:Error` entries to `Desktop\hard.txt`, and prints the overall result.
 
 `Set-RestrictedExecutionPolicy` sets the **LocalMachine** policy. The current session
 keeps its Process-scope `Bypass`, so it runs last, and later sessions get `Restricted`.
 
-**Prompts in a full run.** A full run prompts for what wasn't passed: the Zulu salt
-(`-SaltPhrase`) and the Splunk IP (`-SplunkIP` / `-SkipSplunk`). Unless `-NoPrompt` is
-given, it also asks up front whether to disable RDP (`-DisableRDP` / `-SkipRDP` answer in
-advance) and, at the firewall step, for extra firewall ports. Over WinRM there is no
-console, and `Read-Host` throws. Both questions catch that: RDP is disabled, and the
-firewall continues with the default ports. Anything new that prompts needs a parameter
-that bypasses it.
+**Prompts in a full run.** The Administrator password is prompted first unless a
+`-SaltPhrase` is supplied. Zulu then prompts for its seed if needed; Splunk prompts for its
+IP unless `-SplunkIP` or `-SkipSplunk` is supplied. Firewall setup asks for extra ports
+unless `-NoPrompt`; the RDP choice follows SMB hardening unless `-DisableRDP` or `-SkipRDP`
+was passed. In a session that cannot prompt, RDP is disabled and firewall uses its defaults.
+Anything new that prompts needs a parameter that bypasses it.
 
 ---
 
@@ -382,7 +385,7 @@ Menu errors are reported as `Menu option <key> failed: <message>`, on screen and
 the log.
 
 To add an option, add an entry to `$menuOptions` (with its `Section`) and a case to
-`Invoke-MenuAction`. Then update the option range in the help text ("5-19") and in the
+`Invoke-MenuAction`. Then update the option range in the help text ("5-20") and in the
 README's `Invoke-HardeningMenu` section. To add a section, add its letter to
 `$menuSections`; it must not clash with an option key (`A`) or `Q`.
 
@@ -411,7 +414,7 @@ Write-Status [-Message] <string> [-Level Info|Success|Warning|Error|Skip] [-Tag 
   green, Warning yellow, Error red, Skip dark gray. **Log output** is
   `[time] [LEVEL] message`.
 - **`-Tag`** replaces the level on screen with a subsystem name (`[WinRM]`, `[RDP]`,
-  `[Users 1/4]`). The log line gets `[Tag]` in front of the message.
+  `[Users 1/6]`). The log line gets `[Tag]` in front of the message.
 - **`-LogOnly`** writes details not worth showing on screen. **`-NoLog`** writes to the
   screen only.
 - **`-LogMessage`** logs different text from what the screen shows, usually more detail

@@ -2,7 +2,6 @@ function Set-ZuluPassword {
     [CmdletBinding()]
     param(
         [Alias("h")][switch]$Help,
-        [Alias("i")][switch]$Initial,
         [string]$User,
         # -U (and -u: aliases ignore case) mean -UsersFile, not -User.
         [Alias("U")][string]$UsersFile,
@@ -19,21 +18,15 @@ function Set-ZuluPassword {
     )
 
     process {
-        # -Initial creates and resets accounts, so it cannot run as a dry run.
-        if ($Initial -and $GenerateOnly) {
-            throw "-Initial and -GenerateOnly cannot be used together (-Initial changes account passwords)."
-        }
-
         if ($Help) {
             Write-Host "Usage: Set-ZuluPassword [options]" -ForegroundColor Green
             Write-Host "Default behavior asks for a seed phrase and changes passwords for all auto-detected users minus excluded users." -ForegroundColor Green
             Write-Host "`nOptions:" -ForegroundColor Yellow
             @(
                 "  -Help, -h          Show this help message",
-                "  -Initial, -i       Perform initial setup (change Administrator password and create ccdcuser1/2, or ccdcuser2/3 on a DC)",
                 "  -User              Change password for a single user",
                 "  -UsersFile, -U     Change passwords for newline-separated users in a file (-u also means this)",
-                "  -GenerateOnly, -g  Generate/print passwords only, do not change them (not with -Initial)",
+                "  -GenerateOnly, -g  Generate/print passwords only, do not change them",
                 "  -PCRFile, -p       Output generated passwords as 'username,password' to a PCR (CSV) file",
                 "  -SaltPhrase, -s    Salt phrase (non-interactive; skips prompt). Alias: -Seed",
                 "  -url <url>         The url to the wordlist (used only if Data\wordlist.txt is missing)",
@@ -85,14 +78,12 @@ function Set-ZuluPassword {
 
 
             # Salt phrase: -SaltPhrase if given (non-interactive), otherwise prompt.
-            $seedFromPrompt = $false
             if ($SaltPhrase) {
                 if ($SaltPhrase.Length -lt 8) {
                     throw "Salt phrase must be at least 8 characters long."
                 }
                 $seedPhrase = $SaltPhrase
             } else {
-                $seedFromPrompt = $true
                 while ($true) {
                     $seedPhrase = Read-SecretInput "Enter seed phrase: "
                     $confirmSeedPhrase = Read-SecretInput "Confirm seed phrase: "
@@ -116,24 +107,6 @@ function Set-ZuluPassword {
                 }
             }
             $wordlistData = @(Get-Content $WordlistFile)
-
-            $setupFailures = 0
-            if ($Initial) {
-                Write-Status "Performing initial user setup (Administrator + competition accounts)"
-                # A salt given via -SaltPhrase also derives the initial account passwords (needed for
-                # non-interactive runs, where Read-Host fails). A typed seed means someone is at the
-                # keyboard, so those passwords are entered by hand instead.
-                $setupFailures = if ($seedFromPrompt) {
-                    Initialize-CompetitionUsers -WordlistData $wordlistData
-                } else {
-                    Initialize-CompetitionUsers -WordlistData $wordlistData -SaltPhrase $seedPhrase
-                }
-                if ($setupFailures -gt 0) {
-                    Set-OperationStatus "Add Competition Users" "Failed for $setupFailures account(s) - see log"
-                } else {
-                    Set-OperationStatus "Add Competition Users" "Executed successfully"
-                }
-            }
 
             $rawUsers = if ($User) { @($User) }
                         elseif ($UsersFile) {
@@ -219,13 +192,10 @@ function Set-ZuluPassword {
             }
 
             Write-Host "`nDone!" -ForegroundColor Green
-            Write-Status -Level Warning "Remember to change the Administrator password if not done earlier"
-
             # Fail the "Zulu Passwords" operation (after every user was attempted) so the run
             # summary counts it; the per-user details are in the log and zulu.log.
             $problems = @()
             if ($failedUsers -gt 0) { $problems += "password change failed for $failedUsers of $(@($users).Count) user(s)" }
-            if ($setupFailures -gt 0) { $problems += "$setupFailures competition account(s) not set up" }
             if ($problems) { throw ($problems -join '; ') }
         }
 

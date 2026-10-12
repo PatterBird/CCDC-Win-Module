@@ -16,7 +16,7 @@ function Invoke-HardeningOperation {
         [string]$ProgressMessage = ""
     )
 
-    # Step label (e.g. "Users 2/4") set by the calling orchestrator via
+    # Step label (e.g. "Users 2/6") set by the calling orchestrator via
     # $script:NextStepLabel, for this operation only. Taken before Initialize-System,
     # whose own "Initialize Context" operation must not pick it up.
     $stepLabel = $script:NextStepLabel

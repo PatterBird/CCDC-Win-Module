@@ -4,9 +4,9 @@
         Interactive menu for running individual hardening steps or sections.
     .DESCRIPTION
         Loops until Q. The main screen lists the sections; a section letter (U, N, S, L, P)
-        opens that section's options. Every option keeps its number and can be typed from
-        any screen: 1 runs the full sequence (Invoke-WindowsHardening, which starts a new
-        log), 2-4 run one section, 5-19 run single steps. Several options can be given at
+        opens that section's options. Existing option numbers stay fixed and can be typed
+        from any screen: 1 runs the full sequence (Invoke-WindowsHardening, which starts a new
+        log), 2-4 run one section, 5-20 run single steps. Several options can be given at
         once (e.g. 9,10,13 or 13-15) and run in the order typed. With -Force and
         -Selection, runs one option and returns (no loop).
     #>
@@ -33,19 +33,20 @@
     $menuOptions = @(
         @{ Key = '1';  Label = 'Harden Everything  - Invoke-WindowsHardening (all sections, new log)' }
         @{ Key = '2';  Section = 'U'; Label = 'Harden Users       - run all user & credential steps (Invoke-UserHardening)' }
-        @{ Key = '5';  Section = 'U'; Label = 'Change Passwords (Zulu - no initial setup)' }
-        @{ Key = '6';  Section = 'U'; Label = 'Add Competition Users + rotate all passwords (Zulu -Initial)' }
+        @{ Key = '5';  Section = 'U'; Label = 'Change Existing User Passwords (Zulu)' }
+        @{ Key = '6';  Section = 'U'; Label = 'Change Administrator Password' }
         @{ Key = '7';  Section = 'U'; Label = 'Remove RDP Users   - clear Remote Desktop Users group' }
         @{ Key = '8';  Section = 'U'; Label = 'Add RDP Users      - interactively add users to RDP group' }
         @{ Key = '9';  Section = 'U'; Label = 'Remove Admin Users - strip extra local/AD admin privileges' }
         @{ Key = '10'; Section = 'U'; Label = 'Patch Mimikatz     - disable WDigest credential caching' }
+        @{ Key = '20'; Section = 'U'; Label = 'Create CCDC Users  - create local/domain competition accounts' }
         @{ Key = '3';  Section = 'N'; Label = 'Harden Network     - run all network steps (Invoke-NetworkHardening)' }
         @{ Key = '11'; Section = 'N'; Label = 'Configure Firewall' }
         @{ Key = '12'; Section = 'N'; Label = 'Remove Remote Management - disable WinRM, RDP, Remote Registry, SSH' }
         @{ Key = '19'; Section = 'N'; Label = 'Add Firewall Ports - open extra ports without resetting the firewall' }
         @{ Key = '4';  Section = 'S'; Label = 'Harden Services    - run all service steps (Invoke-ServiceHardening)' }
         @{ Key = '13'; Section = 'S'; Label = 'Disable Unused Network Protocols (IPv6, NetBIOS)' }
-        @{ Key = '14'; Section = 'S'; Label = 'Upgrade SMB (enable v2/3, disable v1, enforce signing)' }
+        @{ Key = '14'; Section = 'S'; Label = 'Mitigate EternalBlue (disable SMBv1, enforce signing)' }
         @{ Key = '18'; Section = 'S'; Label = 'Set Execution Policy to Restricted' }
         @{ Key = '15'; Section = 'L'; Label = 'Enable Advanced Auditing + Firewall Logging' }
         @{ Key = '16'; Section = 'L'; Label = 'Configure Splunk' }
@@ -134,7 +135,7 @@
                 Set-ZuluPassword -SaltPhrase $SaltPhrase
             }
             '6'  {
-                Set-ZuluPassword -Initial -SaltPhrase $SaltPhrase
+                Set-AdministratorPassword -SaltPhrase $SaltPhrase
             }
             '7'  {
                 Remove-RDPUsers
@@ -185,13 +186,16 @@
                 )
                 Add-FirewallPort -Ports $portInput -Protocol $protocol
             }
+            '20' {
+                Create-CCDCUsers -SaltPhrase $SaltPhrase
+            }
 
             # -- Services -----------------------------------------------------
             '13' {
                 Disable-UnusedNetworkProtocols
             }
             '14' {
-                Update-SMB
+                Mitigate-EternalBlue
             }
 
             # -- Monitoring & Patching -----------------------------------------

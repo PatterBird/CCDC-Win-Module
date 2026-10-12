@@ -97,15 +97,15 @@ function Set-OperationStatus {
     $script:log[$Key] = $Value
 }
 
-# Operations listed in the run summary. Each name must match the -OperationName
-# (or Set-OperationStatus key) its function uses.
+# Operations prelisted in the run summary before steps run. Standalone operations
+# are added when invoked through Set-OperationStatus.
 $script:TrackedOperations = @(
     "Initialize Context",
     "Remove Admin Users", "Remove RDP Users", "Add RDP Users",
-    "Zulu Passwords", "Add Competition Users", "Change Passwords", "Patch Mimikatz",
+    "Change Administrator Password", "Zulu Passwords", "Add Competition Users", "Change Passwords", "Patch Mimikatz",
     "Configure Firewall", "Remove Remote Management",
-    "Disable Unused Network Protocols", "Upgrade SMB",
-    "Enable Advanced Auditing", "Configure Splunk", "EternalBlue Mitigated",
+    "Disable Unused Network Protocols", "Mitigate EternalBlue",
+    "Enable Advanced Auditing", "Configure Splunk",
     "Set Execution Policy"
 )
 

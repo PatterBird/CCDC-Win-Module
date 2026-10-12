@@ -4,7 +4,7 @@
 
     $eternalBlueCompatible = @("Client7", "Client8", "Server2008", "Server2008R2", "Server2012", "Server2012R2")
 
-    Invoke-HardeningOperation -OperationName "EternalBlue Mitigated" -OSCompatibility $eternalBlueCompatible -ScriptBlock {
+    Invoke-HardeningOperation -OperationName "Install EternalBlue Patch" -OSCompatibility $eternalBlueCompatible -ScriptBlock {
         $patchUrlsFile = Join-Path $script:DataPath 'patchURLs.json'
         if (-not (Test-Path $patchUrlsFile)) {
             Write-Status -Level Warning "patchURLs.json not found in $script:DataPath (and could not be downloaded)." -LogMessage "patchURLs.json not found"

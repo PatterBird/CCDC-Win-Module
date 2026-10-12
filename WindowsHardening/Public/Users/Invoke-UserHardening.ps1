@@ -4,22 +4,18 @@
         Orchestrates all user and credential hardening in a single call.
 
     .DESCRIPTION
-        Runs the full user hardening sequence in the recommended order:
-
-          1. Remove-AdminUsers      - strips unnecessary local/AD admin privileges
-          2. Set-ZuluPassword       - rotates all passwords and creates competition accounts
-          3. Remove-RDPUsers        - clears the Remote Desktop Users group
-          4. Protect-Mimikatz       - disables WDigest credential caching (no plaintext passwords in LSASS memory)
+        Runs the user and credential hardening steps. The full-run orchestrator calls the
+        leaf functions directly so network and RDP steps can be interleaved in the desired order.
 
         Each step is independently wrapped in Invoke-HardeningOperation, so a failure
         in one step is logged and counted but does not abort the rest.  Use the skip
         parameters to omit individual steps when needed (e.g. during an RDP session
         where you want to keep your own RDP access temporarily).
 
-        Pass -SaltPhrase to run Zulu non-interactively; without it, Zulu prompts.
+        Pass -SaltPhrase for unattended password generation; without it, password functions prompt.
 
     .PARAMETER SkipPasswordChange
-        Skip the Set-ZuluPassword step (no account creation or password rotation).
+        Skip the Administrator password change, Zulu rotation, and CCDC user creation.
 
     .PARAMETER SkipRDP
         Skip the Remove-RDPUsers step (leave the Remote Desktop Users group unchanged).
@@ -35,7 +31,8 @@
 
     .EXAMPLE
         Invoke-UserHardening
-        # Full sequence: admin removal, RDP reset, passwords, credential hardening.
+        # Full sequence: Administrator password, admin cleanup, password rotation,
+        # RDP group reset, credential hardening, then CCDC account creation.
 
     .EXAMPLE
         Invoke-UserHardening -SkipPasswordChange -SkipRDP
@@ -61,43 +58,58 @@
 
     Write-Banner "User & Credential Hardening"
 
-    # Step 1: Remove extra admin accounts
+    # Step 1: Change the built-in Administrator password.
+    if (-not $SkipPasswordChange) {
+        $script:NextStepLabel = 'Users 1/6'
+        Set-AdministratorPassword -SaltPhrase $SaltPhrase
+    } else {
+        Write-Host ""
+        Write-Status -Level Skip -Tag 'Users 1/6' "SKIPPED - Administrator password change (-SkipPasswordChange)" -LogMessage "Invoke-UserHardening: Administrator password change skipped"
+    }
+
+    # Step 2: Remove extra admin accounts.
     if (-not $SkipAdminRemoval) {
-        $script:NextStepLabel = 'Users 1/4'
+        $script:NextStepLabel = 'Users 2/6'
         Remove-AdminUsers
     } else {
         Write-Host ""
-        Write-Status -Level Skip -Tag 'Users 1/4' "SKIPPED - admin removal (-SkipAdminRemoval)" -LogMessage "Invoke-UserHardening: admin removal skipped"
+        Write-Status -Level Skip -Tag 'Users 2/6' "SKIPPED - admin removal (-SkipAdminRemoval)" -LogMessage "Invoke-UserHardening: admin removal skipped"
     }
 
-    # Step 2: Rotate passwords and create competition accounts (before the RDP reset and
-    # the rest of the run, so stolen credentials stop working as early as possible)
+    # Step 3: Rotate eligible existing-user passwords.
     if (-not $SkipPasswordChange) {
-        $script:NextStepLabel = 'Users 2/4'
-        # Set-ZuluPassword runs as its own "Zulu Passwords" operation, so a failure is
-        # counted but does not abort the remaining user, network, and policy hardening.
-        Set-ZuluPassword -Initial -SaltPhrase $SaltPhrase
+        $script:NextStepLabel = 'Users 3/6'
+        Set-ZuluPassword -SaltPhrase $SaltPhrase
     } else {
         Write-Host ""
-        Write-Status -Level Skip -Tag 'Users 2/4' "SKIPPED - password rotation (-SkipPasswordChange)" -LogMessage "Invoke-UserHardening: password rotation skipped"
+        Write-Status -Level Skip -Tag 'Users 3/6' "SKIPPED - password rotation (-SkipPasswordChange)" -LogMessage "Invoke-UserHardening: password rotation skipped"
     }
 
-    # Step 3: Reset RDP group
+    # Step 4: Reset RDP group.
     if (-not $SkipRDP) {
-        $script:NextStepLabel = 'Users 3/4'
+        $script:NextStepLabel = 'Users 4/6'
         Remove-RDPUsers
     } else {
         Write-Host ""
-        Write-Status -Level Skip -Tag 'Users 3/4' "SKIPPED - RDP group reset (-SkipRDP)" -LogMessage "Invoke-UserHardening: RDP group reset skipped"
+        Write-Status -Level Skip -Tag 'Users 4/6' "SKIPPED - RDP group reset (-SkipRDP)" -LogMessage "Invoke-UserHardening: RDP group reset skipped"
     }
 
-    # Step 4: Credential hardening (WDigest)
+    # Step 5: Credential hardening (WDigest).
     if (-not $SkipMimikatz) {
-        $script:NextStepLabel = 'Users 4/4'
+        $script:NextStepLabel = 'Users 5/6'
         Protect-Mimikatz
     } else {
         Write-Host ""
-        Write-Status -Level Skip -Tag 'Users 4/4' "SKIPPED - credential hardening (-SkipMimikatz)" -LogMessage "Invoke-UserHardening: Protect-Mimikatz skipped"
+        Write-Status -Level Skip -Tag 'Users 5/6' "SKIPPED - credential hardening (-SkipMimikatz)" -LogMessage "Invoke-UserHardening: Protect-Mimikatz skipped"
+    }
+
+    # Step 6: Create competition accounts after the more urgent credential cleanup.
+    if (-not $SkipPasswordChange) {
+        $script:NextStepLabel = 'Users 6/6'
+        Create-CCDCUsers -SaltPhrase $SaltPhrase
+    } else {
+        Write-Host ""
+        Write-Status -Level Skip -Tag 'Users 6/6' "SKIPPED - CCDC account creation (-SkipPasswordChange)" -LogMessage "Invoke-UserHardening: CCDC account creation skipped"
     }
 
     Write-Host ""

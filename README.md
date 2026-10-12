@@ -113,12 +113,12 @@ WindowsHardening/
 ├── WindowsHardening.psd1 / .psm1
 ├── Public/
 │   ├── Invoke-WindowsHardening.ps1, Invoke-HardeningMenu.ps1
-│   ├── Users/       Invoke-UserHardening, Set-ZuluPassword, Set-UserPassword,
-│   │                Initialize-CompetitionUsers, New-ADUserAccount, Remove-AdminUsers,
+│   ├── Users/       Invoke-UserHardening, Set-AdministratorPassword, Create-CCDCUsers,
+│   │                Set-ZuluPassword, Set-UserPassword, New-ADUserAccount, Remove-AdminUsers,
 │   │                Remove-RDPUsers, Add-RDPUsers, Protect-Mimikatz
 │   ├── Network/     Invoke-NetworkHardening, Set-FirewallConfiguration, Add-FirewallPort,
 │   │                Get-FirewallPortOptions, Remove-RemoteManagement
-│   ├── Services/    Invoke-ServiceHardening, Disable-UnusedNetworkProtocols, Update-SMB,
+│   ├── Services/    Invoke-ServiceHardening, Mitigate-EternalBlue, Disable-UnusedNetworkProtocols,
 │   │                Set-RestrictedExecutionPolicy
 │   ├── SIEM/        Install-Splunk, Enable-AdvancedAuditing
 │   ├── Patching/    Install-EternalBluePatch
@@ -155,8 +155,8 @@ log file. `Get-HardeningContext` shows what the module detected.
 
 There are two entry points:
 
-- **`Invoke-WindowsHardening`** runs everything: each section orchestrator in
-  order (users, services, network, Splunk, execution policy), then a summary.
+- **`Invoke-WindowsHardening`** runs the full sequence in order, including firewall
+  configuration and SMB hardening before the RDP choice, then prints a summary.
 - **`Invoke-HardeningMenu`** lets you pick individual sections or steps.
 
 ```powershell
@@ -178,12 +178,15 @@ Invoke-WindowsHardening -SkipPasswordChange -SkipRDP -SkipSplunk
 Invoke-HardeningMenu
 ```
 
-`Invoke-WindowsHardening` prompts for values you do not pass: the Zulu salt
-phrase (`-SaltPhrase`) and the Splunk server IP (`-SplunkIP`, or `-SkipSplunk`).
-Before hardening starts it asks whether to disable RDP (`-DisableRDP` or `-SkipRDP`
-answers in advance). At the firewall step it keeps the default ports (plus
-`-FirewallPorts` / `-AdditionalPorts`) and asks for extra ones. `-NoPrompt` skips
-both questions and disables RDP unless `-SkipRDP` is given.
+`Invoke-WindowsHardening` starts by prompting to change the Administrator password,
+then prompts for the Zulu salt phrase (`-SaltPhrase`) and Splunk server IP
+(`-SplunkIP`, or `-SkipSplunk`) as needed. It configures the firewall at step 4,
+then applies ZeroLogon mitigation and SMB hardening. The firewall keeps default ports
+(plus `-FirewallPorts` / `-AdditionalPorts`) and asks for extra ones. After SMB hardening,
+it asks whether RDP
+is needed; answer Yes to keep it enabled or No to disable it. `-NoPrompt` skips the RDP
+and extra-port questions and disables RDP unless `-SkipRDP` is given; required password or Splunk
+prompts still occur unless their values or skip switches are provided.
 
 Optionally take a backup first (experimental):
 
@@ -251,7 +254,9 @@ Get-HardeningContext
 ### `Install-EternalBluePatch`
 
 Downloads and installs the EternalBlue (MS17-010) patch. Requires
-`Data/patchURLs.json` (bundled with the module). No prompts.
+`Data/patchURLs.json` (bundled with the module). This is a standalone operation and
+is not part of `Invoke-WindowsHardening`; installing it may require a restart to finish.
+No prompts.
 
 ```powershell
 Install-EternalBluePatch
@@ -295,7 +300,7 @@ numbers; a section letter opens that section's options:
 | Letter | Section | Options |
 |---|---|---|
 | — | Harden Everything (`Invoke-WindowsHardening`, new log file) | 1 |
-| `U` | Users & Credentials | 2 (run all), 5-10 |
+| `U` | Users & Credentials | 2 (run all), 5-10, 20 |
 | `N` | Network & Remote Access | 3 (run all), 11, 12, 19 |
 | `S` | Services | 4 (run all), 13, 14, 18 |
 | `L` | Logging | 15, 16 |
@@ -321,10 +326,12 @@ Invoke-HardeningMenu -Force -Selection A        # Re-run setup
 
 ### `Invoke-WindowsHardening`
 
-Runs the full hardening sequence: `Invoke-UserHardening` (admin removal, then
-password rotation) → `Invoke-ServiceHardening` → `Invoke-NetworkHardening` → `Install-Splunk` →
-`Set-RestrictedExecutionPolicy`, then prints the operation summary. Each step is
-wrapped, so one failure is counted and reported without stopping the rest. See
+Runs the full hardening sequence: Administrator password change → admin cleanup →
+existing-user password rotation → firewall → ZeroLogon mitigation → SMB hardening →
+RDP choice and cleanup → credential protection → remote-management teardown → protocol
+hardening → Splunk → CCDC account creation → restricted execution policy. The section
+orchestrators remain available for independent user, network, and service runs. Each
+operation is counted so one failure is reported without stopping the rest. See
 [Parameters and Aliases](#parameters-and-aliases).
 
 ```powershell
@@ -334,7 +341,8 @@ Invoke-WindowsHardening -FirewallPorts "80, 443" -SaltPhrase "a long passphrase"
 
 Without `-FirewallPorts`, a domain controller gets the common AD ports and any
 other machine gets Deny All Inbound only; either way the run then asks for extra
-ports to allow, unless `-NoPrompt` is given. WinRM is disabled (by
+ports to allow, unless `-NoPrompt` is given. The RDP prompt asks whether RDP is needed:
+Yes keeps RDP enabled, No disables it. WinRM is disabled (by
 `Remove-RemoteManagement`) unless `-PreserveManagementPort` is given. The
 execution policy is set to Restricted machine-wide, so new sessions need
 `-ExecutionPolicy Bypass` to load the module afterwards.
@@ -423,11 +431,11 @@ Add-FirewallPort -Ports "161" -Protocol UDP
 
 ### `Set-ZuluPassword`
 
-Generates/rotates Zulu passwords. `-Initial` creates the competition users and
-resets the Administrator password (menu option 6). Without prompts it uses the
-provided file/seed/user parameters.
+Generates or rotates Zulu passwords for existing eligible users. The Administrator
+password and competition accounts are handled separately by
+`Set-AdministratorPassword` and `Create-CCDCUsers`.
 
-Competition users created by `-Initial`:
+Competition accounts created by `Create-CCDCUsers`:
 
 | Machine | Admin account | Standard account |
 |---|---|---|
@@ -438,8 +446,11 @@ Competition users created by `-Initial`:
 # Interactive (prompts for users, seed, etc.)
 Set-ZuluPassword
 
-# Non-interactive: set up competition users and rotate passwords
-Set-ZuluPassword -Initial -User ccdcuser1 -SaltPhrase "a long passphrase"
+# Change the built-in Administrator password
+Set-AdministratorPassword
+
+# Create competition accounts
+Create-CCDCUsers -SaltPhrase "a long passphrase"
 
 # Generate-only from a users file (no password change)
 Set-ZuluPassword -GenerateOnly -UsersFile "users.csv"
@@ -463,13 +474,15 @@ Parameter notes: `-SaltPhrase` (aliases `-s`, `-Seed`) sets the salt phrase;
 pass it here. `-U`/`-u` both mean `-UsersFile` (PowerShell aliases
 ignore case); spell out `-User` for a single user.
 
-### `Update-SMB`
+### `Mitigate-EternalBlue`
 
 Enables SMBv2/v3, disables SMBv1, and requires SMB server signing (where
-supported by the edition). No prompts.
+supported by the edition). This mitigates EternalBlue by removing SMBv1. Its
+operation name in progress output and the run summary is `Mitigate EternalBlue`.
+No prompts.
 
 ```powershell
-Update-SMB
+Mitigate-EternalBlue
 ```
 
 ---
@@ -494,10 +507,10 @@ Commonly used parameters and their short aliases:
 |---|---|---|---|
 | `-SkipPasswordChange` / `-sp` | switch | `$false` | Skip Zulu account creation and password rotation |
 | `-SkipRDP` / `-srdp` | switch | `$false` | Keep RDP enabled and skip the RDP group reset, without asking |
-| `-DisableRDP` / `-drdp` | switch | `$false` | Disable RDP and reset the RDP group, without asking. With neither RDP switch, the run asks up front |
+| `-DisableRDP` / `-drdp` | switch | `$false` | Disable RDP and reset the RDP group, without asking. With neither RDP switch, the run asks whether RDP is needed after SMB hardening |
 | `-FirewallPorts` / `-f` | string[] | AD ports on a DC, none otherwise | Ports to allow; supports comma-separated (`"80, 443"`) |
 | `-AdditionalPorts` / `-ap` | string[] | — | Extra ports allowed on top of `-FirewallPorts` or the defaults |
-| `-NoPrompt` | switch | `$false` | Don't ask whether to disable RDP (it is disabled unless `-SkipRDP`) or for extra firewall ports (by default the firewall step keeps the default ports, then asks for extra ones) |
+| `-NoPrompt` | switch | `$false` | Don't ask whether RDP is needed (RDP is disabled unless `-SkipRDP`) or for extra firewall ports |
 | `-SaltPhrase` / `-s` | string | — | Salt phrase for Zulu passwords (else Zulu prompts) |
 | `-LogPath` | string | `C:\Windows\Logs\Hardening` | Log output directory |
 | `-PreserveManagementPort` | switch | `$false` | Keep WinRM reachable (firewall rules for TCP 5985/5986, service not disabled) |

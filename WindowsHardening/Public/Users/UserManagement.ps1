@@ -1,6 +1,6 @@
 ﻿#Requires -Version 5.1
 
-# UserManagement.ps1 - Password changes, user creation, and initial competition-account setup.
+# UserManagement.ps1 - Password changes and competition-account setup.
 
 function New-ADUserAccount {
     param(
@@ -141,79 +141,107 @@ function Set-CompetitionDomainControllerGroups {
     }
 }
 
-function Initialize-CompetitionUsers {
+function Get-CompetitionWordlistData {
+    $wordlistFile = Join-Path $script:DataPath 'wordlist.txt'
+    if (-not (Test-Path $wordlistFile)) {
+        $wordlistUrl = "$script:CcdcRepoUrl/wordlist.txt"
+        Write-Status "Downloading wordlist from $wordlistUrl"
+        if (-not (Get-FileFromUrl -Url $wordlistUrl -OutputPath $wordlistFile)) {
+            throw "Failed to download wordlist from $wordlistUrl"
+        }
+    }
+    return @(Get-Content $wordlistFile)
+}
+
+function Set-AdministratorPassword {
     <#
     .SYNOPSIS
-        Resets the Administrator password and creates the competition accounts.
+        Changes the built-in Administrator account password.
     .DESCRIPTION
-        DC: Administrator, plus domain users ccdcuser2 (standard) and ccdcuser3 (Domain Admin).
-        Otherwise: Administrator, plus local users ccdcuser1 (Administrators) and ccdcuser2.
-        Each account is handled on its own, so one failure does not stop the others.
-        Returns the number of accounts that failed.
+        Prompts for the new password when -SaltPhrase is omitted. When a salt phrase is
+        supplied, derives the password from the bundled Zulu wordlist for unattended runs.
     #>
     [CmdletBinding()]
-    param(
-        [string[]]$WordlistData,
+    param([string]$SaltPhrase)
 
-        # When given, account passwords are derived from it instead of prompted for.
-        [string]$SaltPhrase
-    )
-
-    $isDC = (Get-OperatingSystemInfo).IsDomainController
-    $failed = 0
-
-    $passwordArgs = @{ WordlistData = $WordlistData; SaltPhrase = $SaltPhrase }
-
-    Write-Status "Changing Administrator password"
-    try {
-        Set-UserPassword -Username "Administrator" -PasswordPrompt "Enter new password for Administrator: " @passwordArgs
-    } catch {
-        $failed++
-        Write-Status -Level Error "Administrator password NOT changed: $($_.Exception.Message)"
+    Invoke-HardeningOperation -OperationName 'Change Administrator Password' -ScriptBlock {
+        $passwordArgs = @{}
+        if ($SaltPhrase) {
+            if ($SaltPhrase.Length -lt 8) { throw 'Salt phrase must be at least 8 characters long.' }
+            $passwordArgs.WordlistData = Get-CompetitionWordlistData
+            $passwordArgs.SaltPhrase = $SaltPhrase
+        }
+        Set-UserPassword -Username 'Administrator' -PasswordPrompt 'Enter new password for Administrator: ' @passwordArgs
     }
+}
 
-    if ($isDC) {
-        # ccdcuser2 (standard) and ccdcuser3 (Domain Admin) in AD; ccdcuser1 is local-only.
-        # Lookups use -Filter: Get-ADUser -Identity throws for a missing user even with
-        # -ErrorAction SilentlyContinue. New-ADUser without a password creates a disabled
-        # account, so each user is enabled once its password is set.
-        Write-Status "Setting up domain users ccdcuser2 and ccdcuser3"
-        foreach ($u in @("ccdcuser2", "ccdcuser3")) {
-            try {
-                if (-not (Get-ADUser -Filter "SamAccountName -eq '$u'")) {
-                    New-ADUserAccount -Name $u -SamAccountName $u
+function Create-CCDCUsers {
+    <#
+    .SYNOPSIS
+        Creates the standard competition accounts for this machine.
+    .DESCRIPTION
+        DC: domain users ccdcuser2 (standard) and ccdcuser3 (Domain Admin).
+        Otherwise: local users ccdcuser1 (Administrators) and ccdcuser2. Each account is
+        handled independently. With -SaltPhrase, passwords are derived; otherwise each
+        account password is entered directly.
+    #>
+    [CmdletBinding()]
+    param([string]$SaltPhrase)
+
+    Invoke-HardeningOperation -OperationName 'Add Competition Users' -ScriptBlock {
+        $isDC = (Get-OperatingSystemInfo).IsDomainController
+        $failed = 0
+        $passwordArgs = @{}
+        if ($SaltPhrase) {
+            if ($SaltPhrase.Length -lt 8) { throw 'Salt phrase must be at least 8 characters long.' }
+            $passwordArgs.WordlistData = Get-CompetitionWordlistData
+            $passwordArgs.SaltPhrase = $SaltPhrase
+        }
+
+        if ($isDC) {
+            # ccdcuser2 (standard) and ccdcuser3 (Domain Admin) in AD; ccdcuser1 is local-only.
+            Write-Status "Setting up domain users ccdcuser2 and ccdcuser3"
+            foreach ($u in @('ccdcuser2', 'ccdcuser3')) {
+                try {
+                    if (-not (Get-ADUser -Filter "SamAccountName -eq '$u'")) {
+                        New-ADUserAccount -Name $u -SamAccountName $u
+                    }
+                    Set-UserPassword -Username $u -PasswordPrompt "Enter password for ${u}: " -AddToAdmins:($u -eq 'ccdcuser3') @passwordArgs
+                    Enable-ADAccount -Identity $u -ErrorAction Stop
+                    Write-Status -Level Success "$u ready"
+                } catch {
+                    $failed++
+                    Write-Status -Level Warning "Domain user '$u' not set up: $($_.Exception.Message)" -LogMessage "Domain user '$u' setup failed: $($_.Exception.Message)"
                 }
-                Set-UserPassword -Username $u -PasswordPrompt "Enter password for ${u}: " -AddToAdmins:($u -eq "ccdcuser3") @passwordArgs
-                Enable-ADAccount -Identity $u -ErrorAction Stop
-                Write-Status -Level Success "$u ready"
+            }
+
+            try {
+                Set-CompetitionDomainControllerGroups
             } catch {
                 $failed++
-                Write-Status -Level Warning "Domain user '$u' not set up: $($_.Exception.Message)" -LogMessage "Domain user '$u' setup failed: $($_.Exception.Message)"
+                Write-Status -Level Warning "Could not restore Domain Admins membership in BUILTIN\\Administrators: $($_.Exception.Message)" `
+                    -LogMessage "Domain Admins nesting restore failed: $($_.Exception.Message)"
+            }
+        } else {
+            Write-Status "Setting up local users ccdcuser1 and ccdcuser2"
+            foreach ($u in @('ccdcuser1', 'ccdcuser2')) {
+                try {
+                    if (-not (Get-LocalUser -Name $u -ErrorAction Ignore)) {
+                        New-LocalUser -Name $u -NoPassword -ErrorAction Stop | Out-Null
+                    }
+                    Set-UserPassword -Username $u -PasswordPrompt "Enter password for ${u}: " -AddToAdmins:($u -eq 'ccdcuser1') @passwordArgs
+                    Write-Status -Level Success "$u ready"
+                } catch {
+                    $failed++
+                    Write-Status -Level Warning "Local user '$u' not set up: $($_.Exception.Message)" -LogMessage "Local user '$u' setup failed: $($_.Exception.Message)"
+                }
             }
         }
 
-        try {
-            Set-CompetitionDomainControllerGroups
-        } catch {
-            $failed++
-            Write-Status -Level Warning "Could not restore Domain Admins membership in BUILTIN\\Administrators: $($_.Exception.Message)" `
-                -LogMessage "Domain Admins nesting restore failed: $($_.Exception.Message)"
+        if ($failed -gt 0) {
+            Set-OperationStatus 'Add Competition Users' "Failed for $failed account(s) - see log"
+            throw "Failed to create or configure $failed competition account(s)"
         }
-    } else {
-        Write-Status "Setting up local users ccdcuser1 and ccdcuser2"
-        foreach ($u in @("ccdcuser1", "ccdcuser2")) {
-            try {
-                if (-not (Get-LocalUser -Name $u -ErrorAction Ignore)) {
-                    New-LocalUser -Name $u -NoPassword -ErrorAction Stop | Out-Null
-                }
-                Set-UserPassword -Username $u -PasswordPrompt "Enter password for ${u}: " -AddToAdmins:($u -eq "ccdcuser1") @passwordArgs
-                Write-Status -Level Success "$u ready"
-            } catch {
-                $failed++
-                Write-Status -Level Warning "Local user '$u' not set up: $($_.Exception.Message)" -LogMessage "Local user '$u' setup failed: $($_.Exception.Message)"
-            }
-        }
+        Set-OperationStatus 'Add Competition Users' 'Executed successfully'
     }
-
-    return $failed
 }
